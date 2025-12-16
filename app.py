@@ -1,156 +1,182 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.linear_model import LogisticRegression, LinearRegression
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.svm import SVC, SVR
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix, mean_squared_error, r2_score
-)
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, LabelEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.impute import SimpleImputer
 
 import plotly.express as px
 
+# =====================================================
+# CONFIGURATION STREAMLIT
+# =====================================================
 st.set_page_config(page_title="ML Streamlit App", layout="wide")
-st.title(" Application Machine Learning Interactive")
+st.title("Interactive Machine Learning App")
+st.sidebar.header("Configuration")
 
-st.sidebar.header(" Configuration")
-
+# Source des données
 data_source = st.sidebar.radio(
     "Source des données",
-    ["Dataset préchargé", "Uploader CSV"]
+    ["Projet existant", "Uploader un CSV"]
 )
 
-def load_dataset(name):
-    if name == "Iris":
-        from sklearn.datasets import load_iris
-        data = load_iris(as_frame=True)
-        df = data.frame
-        df["target"] = data.target
-        return df
-    elif name == "Wine":
-        from sklearn.datasets import load_wine
-        data = load_wine(as_frame=True)
-        df = data.frame
-        df["target"] = data.target
-        return df
-    elif name == "Breast Cancer":
-        from sklearn.datasets import load_breast_cancer
-        data = load_breast_cancer(as_frame=True)
-        df = data.frame
-        df["target"] = data.target
-        return df
+# Modèle ML
+model_name = st.sidebar.selectbox(
+    "Choisir le modèle",
+    ["Logistic Regression", "Random Forest", "SVM"]
+)
 
+# Hyperparamètres
+st.sidebar.subheader("Hyperparamètres")
+if model_name == "Logistic Regression":
+    C_value = st.sidebar.slider("C (Regularization)", 0.01, 10.0, 1.0)
+elif model_name == "Random Forest":
+    n_estimators = st.sidebar.slider("n_estimators", 50, 300, 100, step=50)
+    max_depth = st.sidebar.slider("max_depth", 2, 20, 10)
+else:  
+    C_value = st.sidebar.slider("C", 0.01, 10.0, 1.0)
+    kernel = st.sidebar.selectbox("Kernel", ["linear", "rbf", "poly"])
+
+# =====================================================
+# Fonction pour charger les datasets
+# =====================================================
+def load_project_dataset(name):
+    BASE_DIR = os.path.dirname(__file__)
+    if name == "Bank Marketing":
+        csv_file = os.path.join(BASE_DIR, "data", "bank.csv")
+        df = pd.read_csv(csv_file)
+        df.columns = df.columns.str.strip()
+        target = "deposit"
+    elif name == "Customer Churn":
+        csv_file = os.path.join(BASE_DIR, "data", "customer_churn_dataset-testing-master.csv")
+        df = pd.read_csv(csv_file)
+        df = df.drop(columns=["CustomerID"])
+        target = "Churn"
+    elif name == "Income Prediction":
+        csv_file = os.path.join(BASE_DIR, "data", "income_evaluation.csv")
+        df = pd.read_csv(csv_file)
+        df.columns = df.columns.str.strip()
+        df["income"] = df["income"].apply(lambda x: 1 if x.strip() == ">50K" else 0)
+        target = "income"
+    else:
+        csv_file = os.path.join(BASE_DIR, "data", "loan_status.csv")
+        df = pd.read_csv(csv_file)
+        df.columns = df.columns.str.strip()
+        df["Loan_Status"] = df["Loan_Status"].map({"Y": 1, "N": 0})
+        df = df.drop(columns=["Loan_ID"])
+        target = "Loan_Status"
+    return df, target
+
+# =====================================================
+# CHARGEMENT DES DONNEES
+# =====================================================
 df = None
+target_column = None
 
-if data_source == "Dataset préchargé":
-    dataset_name = st.sidebar.selectbox(
-        "Choisir un dataset",
-        ["Iris", "Wine", "Breast Cancer"]
+if data_source == "Projet existant":
+    project = st.sidebar.selectbox(
+        "Choisir le projet",
+        ["Bank Marketing", "Customer Churn", "Income Prediction", "Loan Status"]
     )
-    df = load_dataset(dataset_name)
+    df, target_column = load_project_dataset(project)
 else:
     file = st.sidebar.file_uploader("Uploader un fichier CSV", type=["csv"])
     if file:
         df = pd.read_csv(file)
+        target_column = st.sidebar.selectbox("Variable cible", df.columns)
 
 if df is None:
     st.warning("Veuillez charger un dataset")
     st.stop()
 
-st.sidebar.subheader(" Colonne cible")
-target_column = st.sidebar.selectbox("Choisir la variable à prédire", df.columns)
+# Séparation X / y
+X = df.drop(columns=[target_column])
+y = df[target_column]
+if y.dtype == "object":
+    y = LabelEncoder().fit_transform(y)
 
-y_raw = df[target_column]
-is_classification = (
-    y_raw.dtype == "object" or y_raw.nunique() < 20
-)
+# =====================================================
+# PREPROCESSING
+# =====================================================
+numerical_features = X.select_dtypes(include=np.number).columns.tolist()
+categorical_features = X.select_dtypes(exclude=np.number).columns.tolist()
 
-task_type = "Classification" if is_classification else "Régression"
-st.sidebar.success(f"Type détecté : {task_type}")
+num_pipeline = Pipeline([
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    [" Données", " Modèle", " Résultats", " Prédictions", "⬇ Export"]
-)
+cat_pipeline = Pipeline([
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("encoder", OneHotEncoder(handle_unknown="ignore"))
+])
 
-with tab1:
-    st.dataframe(df.head())
-    st.write(df.describe(include="all"))
-    st.write("Valeurs manquantes :", df.isnull().sum())
+preprocessor = ColumnTransformer([
+    ("num", num_pipeline, numerical_features),
+    ("cat", cat_pipeline, categorical_features)
+])
 
-X = df.drop(target_column, axis=1)
-y = y_raw
+# =====================================================
+# CHOIX DU MODELE
+# =====================================================
+if model_name == "Logistic Regression":
+    classifier = LogisticRegression(C=C_value, max_iter=1000)
+elif model_name == "Random Forest":
+    classifier = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
+else:
+    classifier = SVC(C=C_value, kernel=kernel)
 
-X = pd.get_dummies(X, drop_first=True)
+model = Pipeline([
+    ("preprocessing", preprocessor),
+    ("classifier", classifier)
+])
 
-if is_classification and y.dtype == "object":
-    le = LabelEncoder()
-    y = le.fit_transform(y)
-
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X_scaled, y, test_size=0.2, random_state=42
-)
-
-with tab2:
-    if is_classification:
-        model_name = st.selectbox(
-            "Modèle",
-            ["Logistic Regression", "Random Forest", "SVM"]
-        )
-
-        if model_name == "Logistic Regression":
-            model = LogisticRegression(max_iter=1000)
-        elif model_name == "Random Forest":
-            model = RandomForestClassifier(n_estimators=100)
-        else:
-            model = SVC()
-
-    else:
-        model_name = st.selectbox(
-            "Modèle",
-            ["Linear Regression", "Random Forest Regressor", "SVR"]
-        )
-
-        if model_name == "Linear Regression":
-            model = LinearRegression()
-        elif model_name == "Random Forest Regressor":
-            model = RandomForestRegressor(n_estimators=100)
-        else:
-            model = SVR()
-
+# =====================================================
+# TRAIN TEST SPLIT ET ENTRAINEMENT
+# =====================================================
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 model.fit(X_train, y_train)
 y_pred = model.predict(X_test)
 
-with tab3:
-    if is_classification:
-        st.metric("Accuracy", f"{accuracy_score(y_test, y_pred):.2f}")
-        st.metric("Precision", f"{precision_score(y_test, y_pred, average='weighted'):.2f}")
-        st.metric("Recall", f"{recall_score(y_test, y_pred, average='weighted'):.2f}")
-        st.metric("F1-score", f"{f1_score(y_test, y_pred, average='weighted'):.2f}")
+# =====================================================
+# INTERFACE STREAMLIT : TABS
+# =====================================================
+tab1, tab2, tab3, tab4 = st.tabs(["Données", "Modèle", "Résultats", "Prédiction"])
 
-        cm = confusion_matrix(y_test, y_pred)
-        st.plotly_chart(px.imshow(cm, text_auto=True, title="Confusion Matrix"))
-    else:
-        st.metric("RMSE", f"{np.sqrt(mean_squared_error(y_test, y_pred)):.2f}")
-        st.metric("R²", f"{r2_score(y_test, y_pred):.2f}")
+with tab1:
+    st.subheader("Aperçu des données")
+    st.dataframe(df.head())
+    st.write("Shape:", df.shape)
+    st.write("Valeurs manquantes")
+    st.dataframe(df.isnull().sum())
+
+with tab2:
+    st.subheader("Modèle utilisé")
+    st.write(model_name)
+    st.json(classifier.get_params())
+
+with tab3:
+    acc = accuracy_score(y_test, y_pred)
+    st.metric("Accuracy", f"{acc:.3f}")
+    st.text(classification_report(y_test, y_pred))
+    st.plotly_chart(px.imshow(confusion_matrix(y_test, y_pred), text_auto=True))
 
 with tab4:
-    inputs = []
+    st.subheader("Prédiction utilisateur")
+    user_input = {}
     for col in X.columns:
-        inputs.append(st.number_input(col))
-
-    if st.button("🔮 Prédire"):
-        scaled = scaler.transform([inputs])
-        pred = model.predict(scaled)
-        st.success(f"Résultat : {pred[0]}")
-
-with tab5:
-    result_df = pd.DataFrame({"y_true": y_test, "y_pred": y_pred})
-    st.download_button("⬇️ CSV", result_df.to_csv(index=False), "results.csv")
-    st.download_button("⬇️ JSON", result_df.to_json(orient="records"), "results.json")
+        if col in numerical_features:
+            user_input[col] = st.number_input(col)
+        else:
+            user_input[col] = st.text_input(col)
+    if st.button("Prédire"):
+        pred = model.predict(pd.DataFrame([user_input]))[0]
+        st.success(f"Résultat : {pred}")
